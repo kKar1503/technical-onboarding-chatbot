@@ -25,6 +25,9 @@ next-env.d.ts
 .DS_Store
 *.pem
 
+# draw.io backup files
+docs/.$*.bkp
+
 # debug
 npm-debug.log*
 yarn-debug.log*
