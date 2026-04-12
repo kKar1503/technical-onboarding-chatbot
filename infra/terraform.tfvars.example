@@ -1,0 +1,22 @@
+# Required
+environment           = "dev"
+gitlab_webhook_secret = "your-webhook-secret-here"
+gitlab_access_token   = "glpat-xxxxxxxxxxxxxxxxxxxx"
+
+# Optional overrides
+# aws_region           = "ap-southeast-1"
+# project_name         = "onboarding"
+# vpc_cidr             = "10.0.0.0/16"
+# nextjs_image_tag     = "latest"
+# worker_image_tag     = "latest"
+
+# For HTTPS (optional - leave commented out for HTTP-only)
+# certificate_arn      = "arn:aws:acm:us-east-1:123456789012:certificate/abc-123"
+
+# ECS sizing
+# nextjs_instance_type = "t3.small"   # EC2 instance for Next.js (always-on)
+# nextjs_desired_count = 1
+# nextjs_max_count     = 2
+# worker_cpu           = 1024          # 1 vCPU for Fargate worker
+# worker_memory        = 2048          # 2 GB for Fargate worker
+# worker_max_count     = 5
