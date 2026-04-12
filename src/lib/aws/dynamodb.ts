@@ -11,6 +11,9 @@ export const docClient = DynamoDBDocumentClient.from(client, {
   },
 });
 
-export const TABLE_CONVERSATIONS = "onboarding-conversations";
-export const TABLE_REPOSITORIES = "onboarding-repositories";
-export const TABLE_USERS = "onboarding-users";
+export const TABLE_CONVERSATIONS =
+  process.env.DYNAMODB_TABLE_CONVERSATIONS ?? "onboarding-conversations";
+export const TABLE_REPOSITORIES =
+  process.env.DYNAMODB_TABLE_REPOSITORIES ?? "onboarding-repositories";
+export const TABLE_USERS =
+  process.env.DYNAMODB_TABLE_USERS ?? "onboarding-users";
