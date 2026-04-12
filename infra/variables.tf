@@ -91,3 +91,9 @@ variable "worker_max_count" {
   default     = 5
   description = "Maximum number of Fargate worker tasks"
 }
+
+variable "alarm_email" {
+  type        = string
+  default     = ""
+  description = "Email address to receive CloudWatch alarm notifications. Leave empty to skip SNS subscription."
+}
