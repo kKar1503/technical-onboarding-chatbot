@@ -34,7 +34,7 @@ export async function POST(request: Request) {
   }
 
   const attrs = body.object_attributes;
-  if (!attrs || attrs.action !== "merge" || attrs.state !== "merged") {
+  if (attrs?.action !== "merge" || attrs.state !== "merged") {
     return NextResponse.json({ message: "Ignored: not a merge event" });
   }
 

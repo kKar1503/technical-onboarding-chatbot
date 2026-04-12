@@ -121,7 +121,7 @@ export function ChatContainer() {
         setActiveConversationId(res.data.id);
       }
 
-      sendMessage({ text });
+      void sendMessage({ text });
     },
     [selectedRepoId, activeConversationId, mode, sendMessage],
   );

@@ -37,9 +37,9 @@ export async function POST(req: Request) {
 
   // Save the latest user message
   const lastMessage = messages[messages.length - 1];
-  if (lastMessage && lastMessage.role === "user") {
+  if (lastMessage?.role === "user") {
     const textPart = lastMessage.parts.find((p) => p.type === "text");
-    if (textPart && textPart.type === "text") {
+    if (textPart?.type === "text") {
       await addMessage({
         id: lastMessage.id ?? nanoid(),
         conversationId,

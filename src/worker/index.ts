@@ -57,7 +57,6 @@ async function main() {
   console.log("[worker] Analysis worker started, polling SQS...");
 
   // Run as a long-polling loop
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   while (true) {
     try {
       const processed = await pollOnce();
