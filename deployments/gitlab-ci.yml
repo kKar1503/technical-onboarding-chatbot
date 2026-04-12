@@ -1,0 +1,77 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  AWS_REGION: ap-southeast-1
+  TF_VERSION: "1.13.2"
+  ENVIRONMENT: dev
+  IMAGE_TAG: $CI_COMMIT_SHORT_SHA
+  ECR_REPO: onboarding-${ENVIRONMENT}-app
+
+.aws_auth: &aws_auth
+  before_script:
+    - apk add --no-cache aws-cli
+    - aws configure set region $AWS_REGION
+    - ECR_URL=$(aws ecr describe-repositories --repository-names $ECR_REPO --query 'repositories[0].repositoryUri' --output text)
+    - aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_URL
+
+build:nextjs:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  <<: *aws_auth
+  script:
+    - docker buildx create --use
+    - docker buildx build
+        --platform linux/amd64
+        --target nextjs
+        -t $ECR_URL:nextjs-$IMAGE_TAG
+        --push
+        .
+  only:
+    - main
+
+build:worker:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  <<: *aws_auth
+  script:
+    - docker buildx create --use
+    - docker buildx build
+        --platform linux/amd64
+        --target worker
+        -t $ECR_URL:worker-$IMAGE_TAG
+        --push
+        .
+  only:
+    - main
+
+deploy:
+  stage: deploy
+  image: hashicorp/terraform:$TF_VERSION
+  needs:
+    - build:nextjs
+    - build:worker
+  before_script:
+    - apk add --no-cache aws-cli
+  variables:
+    TF_VAR_environment: $ENVIRONMENT
+    TF_VAR_gitlab_webhook_secret: $TF_VAR_gitlab_webhook_secret
+    TF_VAR_gitlab_access_token: $TF_VAR_gitlab_access_token
+    TF_VAR_nextjs_image_tag: nextjs-$IMAGE_TAG
+    TF_VAR_worker_image_tag: worker-$IMAGE_TAG
+  script:
+    - cd infra
+    - terraform init
+    - terraform apply -auto-approve
+    - CLUSTER=$(terraform output -raw ecs_cluster_name)
+    - SERVICE=$(terraform output -raw nextjs_service_name)
+    - aws ecs wait services-stable --cluster $CLUSTER --services $SERVICE
+    - echo "Deployed $IMAGE_TAG to $(terraform output -raw alb_dns_name)"
+  only:
+    - main
+  resource_group: deploy-$ENVIRONMENT

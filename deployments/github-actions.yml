@@ -1,0 +1,105 @@
+name: Deploy to AWS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-southeast-1
+  TF_VERSION: 1.13.2
+  ENVIRONMENT: dev
+
+jobs:
+  deploy:
+    name: Build, push, and deploy
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Uncomment to use OIDC instead of access keys (recommended):
+      # id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          # OIDC alternative (remove the two lines above and uncomment below):
+          # role-to-assume: arn:aws:iam::<account-id>:role/github-actions-deploy
+          # aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set image tag
+        id: tag
+        run: echo "IMAGE_TAG=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Next.js image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: nextjs
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/onboarding-${{ env.ENVIRONMENT }}-app:nextjs-${{ steps.tag.outputs.IMAGE_TAG }}
+          cache-from: type=gha,scope=nextjs
+          cache-to: type=gha,mode=max,scope=nextjs
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: worker
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/onboarding-${{ env.ENVIRONMENT }}-app:worker-${{ steps.tag.outputs.IMAGE_TAG }}
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform init
+        working-directory: infra
+        run: terraform init
+
+      - name: Terraform apply
+        working-directory: infra
+        env:
+          TF_VAR_environment: ${{ env.ENVIRONMENT }}
+          TF_VAR_gitlab_webhook_secret: ${{ secrets.TF_VAR_gitlab_webhook_secret }}
+          TF_VAR_gitlab_access_token: ${{ secrets.TF_VAR_gitlab_access_token }}
+          TF_VAR_nextjs_image_tag: nextjs-${{ steps.tag.outputs.IMAGE_TAG }}
+          TF_VAR_worker_image_tag: worker-${{ steps.tag.outputs.IMAGE_TAG }}
+        run: terraform apply -auto-approve
+
+      - name: Wait for deployment to stabilize
+        run: |
+          CLUSTER=$(cd infra && terraform output -raw ecs_cluster_name)
+          SERVICE=$(cd infra && terraform output -raw nextjs_service_name)
+          aws ecs wait services-stable --cluster $CLUSTER --services $SERVICE
+
+      - name: Deployment summary
+        run: |
+          cd infra
+          echo "## Deployment successful" >> $GITHUB_STEP_SUMMARY
+          echo "- Image tag: \`${{ steps.tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- ALB: $(terraform output -raw alb_dns_name)" >> $GITHUB_STEP_SUMMARY
