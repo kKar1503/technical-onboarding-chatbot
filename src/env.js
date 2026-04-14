@@ -20,6 +20,15 @@ export const env = createEnv({
     BEDROCK_ANALYSIS_MODEL: z
       .string()
       .default("us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+    EMBEDDING_MODEL_ID: z
+      .string()
+      .default("amazon.titan-embed-text-v2:0"),
+    EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1024),
+    VECTOR_BUCKET_NAME: z.string().min(1),
+    VECTOR_BUCKET_ARN: z.string().min(1),
+    BEDROCK_KB_ROLE_ARN: z.string().min(1),
+    KNOWLEDGE_BUCKET_ARN: z.string().min(1),
+    S3_KMS_KEY_ARN: z.string().min(1),
   },
   client: {},
   runtimeEnv: {
@@ -36,6 +45,13 @@ export const env = createEnv({
     DYNAMODB_TABLE_USERS: process.env.DYNAMODB_TABLE_USERS,
     BEDROCK_CHAT_MODEL: process.env.BEDROCK_CHAT_MODEL,
     BEDROCK_ANALYSIS_MODEL: process.env.BEDROCK_ANALYSIS_MODEL,
+    EMBEDDING_MODEL_ID: process.env.EMBEDDING_MODEL_ID,
+    EMBEDDING_DIMENSIONS: process.env.EMBEDDING_DIMENSIONS,
+    VECTOR_BUCKET_NAME: process.env.VECTOR_BUCKET_NAME,
+    VECTOR_BUCKET_ARN: process.env.VECTOR_BUCKET_ARN,
+    BEDROCK_KB_ROLE_ARN: process.env.BEDROCK_KB_ROLE_ARN,
+    KNOWLEDGE_BUCKET_ARN: process.env.KNOWLEDGE_BUCKET_ARN,
+    S3_KMS_KEY_ARN: process.env.S3_KMS_KEY_ARN,
   },
   skipValidation: !!process.env.SKIP_ENV_VALIDATION,
   emptyStringAsUndefined: true,
