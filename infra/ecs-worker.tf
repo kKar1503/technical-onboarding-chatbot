@@ -11,7 +11,7 @@ resource "aws_ecs_task_definition" "worker" {
 
   container_definitions = jsonencode([{
     name      = "worker"
-    image     = "${aws_ecr_repository.app.repository_url}:${var.worker_image_tag}"
+    image     = "${aws_ecr_repository.app.repository_url}:latest"
     essential = true
 
     command = ["npx", "tsx", "src/worker/index.ts"]
@@ -53,6 +53,11 @@ resource "aws_ecs_service" "worker" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.worker.arn
   desired_count   = 0
+
+  # CI/CD owns image rollouts; autoscaling owns desired_count.
+  lifecycle {
+    ignore_changes = [task_definition, desired_count]
+  }
 
   capacity_provider_strategy {
     capacity_provider = "FARGATE"

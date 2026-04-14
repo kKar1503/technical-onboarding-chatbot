@@ -38,6 +38,16 @@ output "worker_service_name" {
   value       = aws_ecs_service.worker.name
 }
 
+output "nextjs_task_family" {
+  description = "Next.js task definition family (CI/CD uses this to register new revisions)"
+  value       = aws_ecs_task_definition.nextjs.family
+}
+
+output "worker_task_family" {
+  description = "Worker task definition family (CI/CD uses this to register new revisions)"
+  value       = aws_ecs_task_definition.worker.family
+}
+
 output "vpc_id" {
   description = "VPC ID"
   value       = aws_vpc.main.id

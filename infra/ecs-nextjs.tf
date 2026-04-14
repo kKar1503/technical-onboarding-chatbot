@@ -88,7 +88,7 @@ resource "aws_ecs_task_definition" "nextjs" {
 
   container_definitions = jsonencode([{
     name      = "nextjs"
-    image     = "${aws_ecr_repository.app.repository_url}:${var.nextjs_image_tag}"
+    image     = "${aws_ecr_repository.app.repository_url}:latest"
     essential = true
 
     portMappings = [{
@@ -144,6 +144,13 @@ resource "aws_ecs_service" "nextjs" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.nextjs.arn
   desired_count   = var.nextjs_desired_count
+
+  # CI/CD owns image rollouts: the pipeline registers a new task-def revision
+  # with the new image tag and calls `ecs update-service --task-definition`.
+  # Terraform should not revert those.
+  lifecycle {
+    ignore_changes = [task_definition, desired_count]
+  }
 
   capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.ec2.name

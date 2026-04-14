@@ -26,18 +26,6 @@ variable "vpc_cidr" {
   description = "CIDR block for the VPC"
 }
 
-variable "nextjs_image_tag" {
-  type        = string
-  default     = "latest"
-  description = "Docker image tag for the Next.js service"
-}
-
-variable "worker_image_tag" {
-  type        = string
-  default     = "latest"
-  description = "Docker image tag for the analysis worker"
-}
-
 variable "certificate_arn" {
   type        = string
   default     = ""
