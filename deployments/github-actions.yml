@@ -50,27 +50,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push Next.js image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          target: nextjs
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.ecr.outputs.registry }}/onboarding-${{ env.ENVIRONMENT }}-app:nextjs-${{ steps.tag.outputs.IMAGE_TAG }}
-          cache-from: type=gha,scope=nextjs
-          cache-to: type=gha,mode=max,scope=nextjs
-
-      - name: Build and push worker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          target: worker
-          platforms: linux/amd64
-          push: true
-          tags: ${{ steps.ecr.outputs.registry }}/onboarding-${{ env.ENVIRONMENT }}-app:worker-${{ steps.tag.outputs.IMAGE_TAG }}
-          cache-from: type=gha,scope=worker
-          cache-to: type=gha,mode=max,scope=worker
+      # -----------------------------------------------------------------
+      # Terraform runs first with the CURRENT image; it never rewrites
+      # the task-def image tag (services have `ignore_changes =
+      # [task_definition]`). CI then rolls out the new image in a
+      # separate step by registering a new task-def revision.
+      # -----------------------------------------------------------------
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -81,25 +66,110 @@ jobs:
         working-directory: infra
         run: terraform init
 
-      - name: Terraform apply
+      - name: Terraform apply (infrastructure only)
         working-directory: infra
         env:
           TF_VAR_environment: ${{ env.ENVIRONMENT }}
           TF_VAR_gitlab_webhook_secret: ${{ secrets.TF_VAR_gitlab_webhook_secret }}
           TF_VAR_gitlab_access_token: ${{ secrets.TF_VAR_gitlab_access_token }}
-          TF_VAR_nextjs_image_tag: nextjs-${{ steps.tag.outputs.IMAGE_TAG }}
-          TF_VAR_worker_image_tag: worker-${{ steps.tag.outputs.IMAGE_TAG }}
         run: terraform apply -auto-approve
 
-      - name: Wait for deployment to stabilize
+      - name: Read deploy targets from Terraform
+        id: tf
+        working-directory: infra
         run: |
-          CLUSTER=$(cd infra && terraform output -raw ecs_cluster_name)
-          SERVICE=$(cd infra && terraform output -raw nextjs_service_name)
-          aws ecs wait services-stable --cluster $CLUSTER --services $SERVICE
+          {
+            echo "ECR_REPO=$(terraform output -raw ecr_repository_url)"
+            echo "CLUSTER=$(terraform output -raw ecs_cluster_name)"
+            echo "NEXTJS_SERVICE=$(terraform output -raw nextjs_service_name)"
+            echo "WORKER_SERVICE=$(terraform output -raw worker_service_name)"
+            echo "NEXTJS_FAMILY=$(terraform output -raw nextjs_task_family)"
+            echo "WORKER_FAMILY=$(terraform output -raw worker_task_family)"
+          } >> $GITHUB_OUTPUT
+
+      - name: Build and push Next.js image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: nextjs
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tf.outputs.ECR_REPO }}:nextjs-${{ steps.tag.outputs.IMAGE_TAG }}
+          cache-from: type=gha,scope=nextjs
+          cache-to: type=gha,mode=max,scope=nextjs
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: worker
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tf.outputs.ECR_REPO }}:worker-${{ steps.tag.outputs.IMAGE_TAG }}
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+      - name: Register new Next.js task definition revision
+        id: nextjs_td
+        run: |
+          NEW_IMAGE="${{ steps.tf.outputs.ECR_REPO }}:nextjs-${{ steps.tag.outputs.IMAGE_TAG }}"
+          CURRENT=$(aws ecs describe-task-definition \
+            --task-definition "${{ steps.tf.outputs.NEXTJS_FAMILY }}" \
+            --query 'taskDefinition')
+          NEW_TD=$(echo "$CURRENT" | jq --arg IMG "$NEW_IMAGE" '
+            .containerDefinitions[0].image = $IMG
+            | {family, taskRoleArn, executionRoleArn, networkMode, containerDefinitions,
+               volumes, placementConstraints, requiresCompatibilities, cpu, memory, tags,
+               runtimePlatform}
+            | with_entries(select(.value != null and .value != []))')
+          ARN=$(echo "$NEW_TD" | aws ecs register-task-definition --cli-input-json file:///dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "TD_ARN=$ARN" >> $GITHUB_OUTPUT
+
+      - name: Register new worker task definition revision
+        id: worker_td
+        run: |
+          NEW_IMAGE="${{ steps.tf.outputs.ECR_REPO }}:worker-${{ steps.tag.outputs.IMAGE_TAG }}"
+          CURRENT=$(aws ecs describe-task-definition \
+            --task-definition "${{ steps.tf.outputs.WORKER_FAMILY }}" \
+            --query 'taskDefinition')
+          NEW_TD=$(echo "$CURRENT" | jq --arg IMG "$NEW_IMAGE" '
+            .containerDefinitions[0].image = $IMG
+            | {family, taskRoleArn, executionRoleArn, networkMode, containerDefinitions,
+               volumes, placementConstraints, requiresCompatibilities, cpu, memory, tags,
+               runtimePlatform}
+            | with_entries(select(.value != null and .value != []))')
+          ARN=$(echo "$NEW_TD" | aws ecs register-task-definition --cli-input-json file:///dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "TD_ARN=$ARN" >> $GITHUB_OUTPUT
+
+      - name: Update Next.js service
+        run: |
+          aws ecs update-service \
+            --cluster "${{ steps.tf.outputs.CLUSTER }}" \
+            --service "${{ steps.tf.outputs.NEXTJS_SERVICE }}" \
+            --task-definition "${{ steps.nextjs_td.outputs.TD_ARN }}" >/dev/null
+
+      - name: Update worker service
+        run: |
+          aws ecs update-service \
+            --cluster "${{ steps.tf.outputs.CLUSTER }}" \
+            --service "${{ steps.tf.outputs.WORKER_SERVICE }}" \
+            --task-definition "${{ steps.worker_td.outputs.TD_ARN }}" >/dev/null
+
+      - name: Wait for Next.js deployment to stabilize
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${{ steps.tf.outputs.CLUSTER }}" \
+            --services "${{ steps.tf.outputs.NEXTJS_SERVICE }}"
 
       - name: Deployment summary
         run: |
           cd infra
-          echo "## Deployment successful" >> $GITHUB_STEP_SUMMARY
-          echo "- Image tag: \`${{ steps.tag.outputs.IMAGE_TAG }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- ALB: $(terraform output -raw alb_dns_name)" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Deployment successful"
+            echo "- Image tag: \`${{ steps.tag.outputs.IMAGE_TAG }}\`"
+            echo "- Next.js TD: \`${{ steps.nextjs_td.outputs.TD_ARN }}\`"
+            echo "- Worker TD: \`${{ steps.worker_td.outputs.TD_ARN }}\`"
+            echo "- ALB: $(terraform output -raw alb_dns_name)"
+          } >> $GITHUB_STEP_SUMMARY

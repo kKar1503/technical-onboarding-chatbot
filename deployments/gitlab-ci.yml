@@ -1,4 +1,5 @@
 stages:
+  - infra
   - build
   - deploy
 
@@ -8,6 +9,35 @@ variables:
   ENVIRONMENT: dev
   IMAGE_TAG: $CI_COMMIT_SHORT_SHA
   ECR_REPO: onboarding-${ENVIRONMENT}-app
+
+# -----------------------------------------------------------------
+# Terraform runs first with the CURRENT image; it never rewrites
+# the task-def image tag (services have `ignore_changes =
+# [task_definition]`). The deploy stage rolls out the new image
+# by registering a new task-def revision.
+# -----------------------------------------------------------------
+
+infra:
+  stage: infra
+  image: hashicorp/terraform:$TF_VERSION
+  before_script:
+    - apk add --no-cache aws-cli
+  variables:
+    TF_VAR_environment: $ENVIRONMENT
+    TF_VAR_gitlab_webhook_secret: $TF_VAR_gitlab_webhook_secret
+    TF_VAR_gitlab_access_token: $TF_VAR_gitlab_access_token
+  script:
+    - cd infra
+    - terraform init
+    - terraform apply -auto-approve
+  artifacts:
+    paths:
+      - infra/.terraform/
+      - infra/.terraform.lock.hcl
+    expire_in: 1h
+  only:
+    - main
+  resource_group: deploy-$ENVIRONMENT
 
 .aws_auth: &aws_auth
   before_script:
@@ -52,26 +82,44 @@ build:worker:
 
 deploy:
   stage: deploy
-  image: hashicorp/terraform:$TF_VERSION
+  image: alpine:3.19
   needs:
+    - infra
     - build:nextjs
     - build:worker
   before_script:
-    - apk add --no-cache aws-cli
-  variables:
-    TF_VAR_environment: $ENVIRONMENT
-    TF_VAR_gitlab_webhook_secret: $TF_VAR_gitlab_webhook_secret
-    TF_VAR_gitlab_access_token: $TF_VAR_gitlab_access_token
-    TF_VAR_nextjs_image_tag: nextjs-$IMAGE_TAG
-    TF_VAR_worker_image_tag: worker-$IMAGE_TAG
+    - apk add --no-cache aws-cli jq curl
+    - curl -sSL https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip -o tf.zip
+    - unzip tf.zip -d /usr/local/bin && rm tf.zip
   script:
     - cd infra
     - terraform init
-    - terraform apply -auto-approve
+    - ECR_URL=$(terraform output -raw ecr_repository_url)
     - CLUSTER=$(terraform output -raw ecs_cluster_name)
-    - SERVICE=$(terraform output -raw nextjs_service_name)
-    - aws ecs wait services-stable --cluster $CLUSTER --services $SERVICE
-    - echo "Deployed $IMAGE_TAG to $(terraform output -raw alb_dns_name)"
+    - NEXTJS_SERVICE=$(terraform output -raw nextjs_service_name)
+    - WORKER_SERVICE=$(terraform output -raw worker_service_name)
+    - NEXTJS_FAMILY=$(terraform output -raw nextjs_task_family)
+    - WORKER_FAMILY=$(terraform output -raw worker_task_family)
+    - cd ..
+    - |
+      register_new_revision() {
+        local family="$1" image="$2"
+        aws ecs describe-task-definition --task-definition "$family" --query 'taskDefinition' \
+          | jq --arg IMG "$image" '
+              .containerDefinitions[0].image = $IMG
+              | {family, taskRoleArn, executionRoleArn, networkMode, containerDefinitions,
+                 volumes, placementConstraints, requiresCompatibilities, cpu, memory, tags,
+                 runtimePlatform}
+              | with_entries(select(.value != null and .value != []))' \
+          | aws ecs register-task-definition --cli-input-json file:///dev/stdin \
+              --query 'taskDefinition.taskDefinitionArn' --output text
+      }
+    - NEXTJS_TD=$(register_new_revision "$NEXTJS_FAMILY" "$ECR_URL:nextjs-$IMAGE_TAG")
+    - WORKER_TD=$(register_new_revision "$WORKER_FAMILY" "$ECR_URL:worker-$IMAGE_TAG")
+    - aws ecs update-service --cluster "$CLUSTER" --service "$NEXTJS_SERVICE" --task-definition "$NEXTJS_TD" >/dev/null
+    - aws ecs update-service --cluster "$CLUSTER" --service "$WORKER_SERVICE" --task-definition "$WORKER_TD" >/dev/null
+    - aws ecs wait services-stable --cluster "$CLUSTER" --services "$NEXTJS_SERVICE"
+    - echo "Deployed $IMAGE_TAG — Next.js=$NEXTJS_TD worker=$WORKER_TD"
   only:
     - main
   resource_group: deploy-$ENVIRONMENT
