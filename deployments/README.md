@@ -9,10 +9,11 @@ These files are **not active**. To use them:
 
 Both pipelines follow the same flow:
 
-1. Build Docker images (multi-arch `linux/amd64`) for `nextjs` and `worker` targets
-2. Push to ECR with a unique tag derived from the git SHA
-3. Run `terraform apply` to roll out new task definition revisions
-4. ECS performs a rolling deployment with zero downtime
+1. `terraform apply` — infrastructure only (no image-tag vars). The ECS services use `lifecycle { ignore_changes = [task_definition, desired_count] }` so this never reverts the running image.
+2. Build Docker images (`linux/amd64`) for the `nextjs` and `worker` Dockerfile targets
+3. Push to ECR with a unique tag derived from the git SHA (`nextjs-<sha>` / `worker-<sha>`)
+4. For each service: `describe-task-definition` → patch image → `register-task-definition` → `update-service --task-definition <new-arn>`
+5. `aws ecs wait services-stable` to confirm the rollout
 
 See [`../docs/ci-cd-deployment.md`](../docs/ci-cd-deployment.md) for the deployment strategy overview and [`../docs/aws-deployment.md`](../docs/aws-deployment.md) for the initial infrastructure setup.
 
