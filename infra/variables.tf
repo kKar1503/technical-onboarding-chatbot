@@ -109,3 +109,15 @@ variable "bedrock_analysis_model" {
   default     = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
   description = "Bedrock model ID for the async repository analysis agent. Slow + accurate. Must be enabled in the deployment region."
 }
+
+variable "embedding_model_id" {
+  type        = string
+  default     = "amazon.titan-embed-text-v2:0"
+  description = "Bedrock embedding model used by the Knowledge Base. 1024 dims for titan-embed-text-v2. Changing this requires rebuilding all vector indexes."
+}
+
+variable "embedding_dimensions" {
+  type        = number
+  default     = 1024
+  description = "Vector dimensions for the embedding model. Must match embedding_model_id."
+}

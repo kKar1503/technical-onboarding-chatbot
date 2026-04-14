@@ -3,8 +3,9 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = ">= 5.0"
+      source = "hashicorp/aws"
+      # 6.24+ required for aws_s3vectors_vector_bucket / aws_s3vectors_index.
+      version = ">= 6.24"
     }
   }
 
