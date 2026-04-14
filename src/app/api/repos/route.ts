@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { nanoid } from "nanoid";
-import { createRepo, listRepos } from "~/lib/db/repos";
+import {
+  createRepo,
+  listRepos,
+  updateRepoKnowledgeBase,
+  updateRepoStatus,
+} from "~/lib/db/repos";
+import { createKnowledgeBaseForRepo } from "~/lib/aws/bedrock-kb";
 
 export async function GET() {
   const repos = await listRepos();
@@ -14,8 +20,11 @@ export async function POST(request: Request) {
     branch: string;
   };
 
+  const id = nanoid();
+  const s3Prefix = `knowledge/${id}`;
+
   const repo = {
-    id: nanoid(),
+    id,
     name: body.name,
     gitUrl: body.gitUrl,
     branch: body.branch,
@@ -23,9 +32,31 @@ export async function POST(request: Request) {
     lastAnalyzedAt: null,
     knowledgeBaseId: null,
     dataSourceId: null,
-    s3Prefix: `knowledge/${nanoid()}`,
+    vectorIndexArn: null,
+    s3Prefix,
   };
 
   await createRepo(repo);
-  return NextResponse.json(repo, { status: 201 });
+
+  try {
+    const { knowledgeBaseId, dataSourceId, vectorIndexArn } =
+      await createKnowledgeBaseForRepo(id, body.name, s3Prefix);
+    await updateRepoKnowledgeBase(
+      id,
+      knowledgeBaseId,
+      dataSourceId,
+      vectorIndexArn,
+    );
+    return NextResponse.json(
+      { ...repo, knowledgeBaseId, dataSourceId, vectorIndexArn },
+      { status: 201 },
+    );
+  } catch (err) {
+    console.error("[repos] KB provisioning failed", err);
+    await updateRepoStatus(id, "error");
+    return NextResponse.json(
+      { ...repo, status: "error", error: (err as Error).message },
+      { status: 500 },
+    );
+  }
 }
