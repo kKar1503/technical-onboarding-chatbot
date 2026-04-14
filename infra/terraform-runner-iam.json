@@ -166,7 +166,6 @@
       "Effect": "Allow",
       "Action": [
         "iam:CreateRole", "iam:DeleteRole", "iam:GetRole", "iam:UpdateRole",
-        "iam:PassRole",
         "iam:AttachRolePolicy", "iam:DetachRolePolicy", "iam:ListAttachedRolePolicies",
         "iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:GetRolePolicy", "iam:ListRolePolicies",
         "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile", "iam:GetInstanceProfile",
@@ -176,6 +175,25 @@
         "iam:ListInstanceProfilesForRole"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "PassRoleToECSAndEC2",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::*:role/onboarding-*-ecs-instance",
+        "arn:aws:iam::*:role/onboarding-*-ecs-execution",
+        "arn:aws:iam::*:role/onboarding-*-nextjs-task",
+        "arn:aws:iam::*:role/onboarding-*-worker-task"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": [
+            "ecs-tasks.amazonaws.com",
+            "ec2.amazonaws.com"
+          ]
+        }
+      }
     },
     {
       "Sid": "ApplicationAutoScaling",
