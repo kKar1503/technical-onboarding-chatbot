@@ -110,6 +110,13 @@ resource "aws_ecs_task_definition" "nextjs" {
       { name = "DYNAMODB_TABLE_USERS", value = aws_dynamodb_table.users.name },
       { name = "BEDROCK_CHAT_MODEL", value = var.bedrock_chat_model },
       { name = "BEDROCK_ANALYSIS_MODEL", value = var.bedrock_analysis_model },
+      { name = "EMBEDDING_MODEL_ID", value = var.embedding_model_id },
+      { name = "EMBEDDING_DIMENSIONS", value = tostring(var.embedding_dimensions) },
+      { name = "VECTOR_BUCKET_NAME", value = aws_s3vectors_vector_bucket.main.vector_bucket_name },
+      { name = "VECTOR_BUCKET_ARN", value = aws_s3vectors_vector_bucket.main.vector_bucket_arn },
+      { name = "BEDROCK_KB_ROLE_ARN", value = aws_iam_role.bedrock_kb.arn },
+      { name = "KNOWLEDGE_BUCKET_ARN", value = aws_s3_bucket.knowledge.arn },
+      { name = "S3_KMS_KEY_ARN", value = aws_kms_key.s3.arn },
     ]
 
     secrets = [

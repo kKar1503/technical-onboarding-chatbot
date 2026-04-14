@@ -169,6 +169,47 @@ resource "aws_iam_role_policy" "nextjs_task" {
         Action   = ["bedrock-agent-runtime:Retrieve"]
         Resource = "arn:aws:bedrock:${local.region}:${local.account_id}:knowledge-base/*"
       },
+      {
+        Sid    = "BedrockKBManage"
+        Effect = "Allow"
+        Action = [
+          "bedrock:CreateKnowledgeBase",
+          "bedrock:DeleteKnowledgeBase",
+          "bedrock:GetKnowledgeBase",
+          "bedrock:ListKnowledgeBases",
+          "bedrock:CreateDataSource",
+          "bedrock:DeleteDataSource",
+          "bedrock:GetDataSource",
+          "bedrock:ListDataSources",
+          "bedrock:StartIngestionJob",
+          "bedrock:GetIngestionJob",
+          "bedrock:TagResource",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid      = "PassKBRole"
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
+        Resource = aws_iam_role.bedrock_kb.arn
+        Condition = {
+          StringEquals = { "iam:PassedToService" = "bedrock.amazonaws.com" }
+        }
+      },
+      {
+        Sid    = "S3VectorsManage"
+        Effect = "Allow"
+        Action = [
+          "s3vectors:CreateIndex",
+          "s3vectors:DeleteIndex",
+          "s3vectors:GetIndex",
+          "s3vectors:ListIndexes",
+        ]
+        Resource = [
+          aws_s3vectors_vector_bucket.main.vector_bucket_arn,
+          "${aws_s3vectors_vector_bucket.main.vector_bucket_arn}/index/*",
+        ]
+      },
     ]
   })
 }
