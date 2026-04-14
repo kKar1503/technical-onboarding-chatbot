@@ -1,5 +1,5 @@
 import { ToolLoopAgent, tool, stepCountIs } from "ai";
-import { chatModel } from "~/lib/aws/bedrock";
+import { analysisModel } from "~/lib/aws/bedrock";
 import { uploadKnowledgeDoc } from "~/lib/aws/s3";
 import { z } from "zod";
 import { readFileSync, readdirSync, statSync } from "fs";
@@ -22,7 +22,7 @@ Be thorough but concise. Focus on information that would help someone new to the
 
 export function createAnalysisAgent(repoPath: string, repoId: string) {
   return new ToolLoopAgent({
-    model: chatModel,
+    model: analysisModel,
     instructions: ANALYSIS_INSTRUCTIONS,
     stopWhen: stepCountIs(100),
     tools: {

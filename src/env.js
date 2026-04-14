@@ -14,6 +14,12 @@ export const env = createEnv({
     DYNAMODB_TABLE_CONVERSATIONS: z.string().optional(),
     DYNAMODB_TABLE_REPOSITORIES: z.string().optional(),
     DYNAMODB_TABLE_USERS: z.string().optional(),
+    BEDROCK_CHAT_MODEL: z
+      .string()
+      .default("us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+    BEDROCK_ANALYSIS_MODEL: z
+      .string()
+      .default("us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
   },
   client: {},
   runtimeEnv: {
@@ -28,6 +34,8 @@ export const env = createEnv({
     DYNAMODB_TABLE_CONVERSATIONS: process.env.DYNAMODB_TABLE_CONVERSATIONS,
     DYNAMODB_TABLE_REPOSITORIES: process.env.DYNAMODB_TABLE_REPOSITORIES,
     DYNAMODB_TABLE_USERS: process.env.DYNAMODB_TABLE_USERS,
+    BEDROCK_CHAT_MODEL: process.env.BEDROCK_CHAT_MODEL,
+    BEDROCK_ANALYSIS_MODEL: process.env.BEDROCK_ANALYSIS_MODEL,
   },
   skipValidation: !!process.env.SKIP_ENV_VALIDATION,
   emptyStringAsUndefined: true,

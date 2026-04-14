@@ -108,6 +108,8 @@ resource "aws_ecs_task_definition" "nextjs" {
       { name = "DYNAMODB_TABLE_CONVERSATIONS", value = aws_dynamodb_table.conversations.name },
       { name = "DYNAMODB_TABLE_REPOSITORIES", value = aws_dynamodb_table.repositories.name },
       { name = "DYNAMODB_TABLE_USERS", value = aws_dynamodb_table.users.name },
+      { name = "BEDROCK_CHAT_MODEL", value = var.bedrock_chat_model },
+      { name = "BEDROCK_ANALYSIS_MODEL", value = var.bedrock_analysis_model },
     ]
 
     secrets = [

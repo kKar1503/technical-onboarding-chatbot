@@ -97,3 +97,15 @@ variable "alarm_email" {
   default     = ""
   description = "Email address to receive CloudWatch alarm notifications. Leave empty to skip SNS subscription."
 }
+
+variable "bedrock_chat_model" {
+  type        = string
+  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+  description = "Bedrock model ID for the user-facing chat agent. Fast + cheap. Must be enabled in the deployment region."
+}
+
+variable "bedrock_analysis_model" {
+  type        = string
+  default     = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  description = "Bedrock model ID for the async repository analysis agent. Slow + accurate. Must be enabled in the deployment region."
+}
