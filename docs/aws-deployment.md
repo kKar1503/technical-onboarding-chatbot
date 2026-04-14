@@ -4,83 +4,73 @@ End-to-end instructions to deploy the onboarding chatbot to AWS from scratch.
 
 ## Prerequisites
 
-Install the following tools locally:
+Install locally:
 
 - [Terraform](https://developer.hashicorp.com/terraform/downloads) >= 1.5
 - [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
-- [Docker](https://docs.docker.com/get-docker/) (with buildx for multi-platform builds)
-- `pnpm` (already used for app development)
+- [Docker](https://docs.docker.com/get-docker/) with buildx
+- `pnpm` 10 (used for app development)
+- `jq` (CI rollouts use it)
 
 You'll also need:
-- An AWS account with admin access (for one-time setup)
+
+- An AWS account with admin access for the one-time bootstrap
 - A GitLab access token with `api` + `read_repository` scopes
-- A GitLab webhook secret (any random string you generate)
+- A GitLab webhook secret (any random string — generate with `openssl rand -hex 32`)
 
-## Step 1: Create an IAM User for Terraform
+## Step 1: Create the Terraform IAM principal
 
-Rather than running Terraform with your root account or admin user, create a dedicated IAM user with only the permissions needed.
+Don't run Terraform with root or admin. Create a dedicated user.
 
-1. In the AWS Console, go to **IAM → Users → Create user**
-2. Name it `onboarding-terraform`
-3. Attach a custom policy using the contents of [`infra/terraform-runner-iam.json`](../infra/terraform-runner-iam.json)
-4. Create an access key for this user (type: "Application running outside AWS")
-5. Save the Access Key ID and Secret Access Key — you'll need them next
+1. **IAM → Users → Create user** → name `onboarding-terraform`
+2. Attach a custom policy with the contents of [`infra/terraform-runner-iam.json`](../infra/terraform-runner-iam.json)
+3. Create an access key (type: "Application running outside AWS")
+4. Save the credentials
 
 ## Step 2: Configure AWS CLI
 
 ```bash
 aws configure --profile onboarding
-# AWS Access Key ID: <paste from step 1>
-# AWS Secret Access Key: <paste from step 1>
+# AWS Access Key ID: <from step 1>
+# AWS Secret Access Key: <from step 1>
 # Default region: ap-southeast-1
 # Default output format: json
-```
 
-Export the profile so all subsequent commands use it:
-
-```bash
 export AWS_PROFILE=onboarding
+aws sts get-caller-identity   # sanity check
 ```
 
-Verify:
+## Step 3: Enable Bedrock model access
 
-```bash
-aws sts get-caller-identity
-# Should return your IAM user's ARN
-```
+Bedrock requires explicit opt-in per model per region. Cannot be automated by Terraform.
 
-## Step 3: Enable Amazon Bedrock Model Access
+In the AWS Console: **Amazon Bedrock → Model access** (in your deploy region) → **Modify model access** → request:
 
-Bedrock requires explicit opt-in for each model. This cannot be automated via Terraform.
+- **Anthropic Claude Haiku 4.5** — used by the chat agent (fast, cheap)
+- **Anthropic Claude Sonnet 4.5** — used by the analysis agent (slow, accurate)
+- **Amazon Titan Text Embeddings V2** — used by the Knowledge Base for embeddings
 
-1. In the AWS Console, go to **Amazon Bedrock → Model access** (in your chosen region, e.g. `ap-southeast-1`)
-2. Click **Modify model access**
-3. Request access to:
-   - **Anthropic Claude Sonnet 4** (`anthropic.claude-sonnet-4-20250514`)
-   - **Amazon Titan Text Embeddings V2** (needed for Knowledge Base embeddings)
-4. Submit — approval is usually instant
+Approval for Anthropic + Amazon models is usually instant.
 
-## Step 4: Provision Infrastructure with Terraform
+> **Region note:** if you're outside `us-*`, the Claude 4.5 IDs use a region prefix (`us.`, `apac.`, `eu.`). The defaults in `terraform.tfvars.example` use `us.` — change to `apac.anthropic.claude-...` for `ap-southeast-1` if needed, or override via `bedrock_chat_model` / `bedrock_analysis_model` tfvars.
+
+## Step 4: Provision infrastructure
 
 ```bash
 cd infra
-```
-
-Create your `terraform.tfvars` from the example:
-
-```bash
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Edit `terraform.tfvars` and set:
+Edit `terraform.tfvars`:
 
 ```hcl
 environment           = "dev"
 gitlab_webhook_secret = "<your-random-secret>"
-gitlab_access_token   = "glpat-xxxxxxxxxxxxxxxxxxxx"
+gitlab_access_token   = "glpat-..."
+alarm_email           = "ops@example.com"  # optional but recommended
 ```
 
-Initialize and apply:
+Apply:
 
 ```bash
 terraform init
@@ -88,217 +78,253 @@ terraform plan
 terraform apply
 ```
 
-This will take ~10 minutes. It creates:
-- VPC, subnets, fck-nat instance, security groups
-- ALB
-- ECR repository
-- 3 DynamoDB tables (with KMS encryption + PITR)
-- S3 buckets (knowledge + access logs, both KMS-encrypted)
-- SQS FIFO queue + DLQ (encrypted)
-- CloudWatch log groups (KMS-encrypted)
-- SSM SecureString parameters for secrets
-- All IAM roles and policies
-- ECS cluster with EC2 capacity provider
-- EC2 ASG for Next.js
-- Fargate service for worker (scale-to-zero)
+Takes ~10 minutes. Provisions:
 
-**Note:** The ECS services will fail to start initially because the ECR repository is empty. We'll fix that in the next step.
+- VPC, public + private subnets, fck-nat instance (Graviton, ~$3/mo NAT alternative), security groups
+- ALB + target group + HTTP listener (HTTPS gated on `certificate_arn`)
+- ECR repo (immutable tags, KMS-encrypted)
+- 3 DynamoDB tables (PAY_PER_REQUEST, KMS-encrypted)
+- 2 S3 buckets — `knowledge` (KB source docs) + `access-logs`
+- 1 S3 Vectors bucket (shared backing store for all per-repo KBs)
+- SQS FIFO queue + DLQ
+- ECS cluster, EC2 ASG for Next.js, Fargate worker (scale-to-zero)
+- IAM roles (Next.js task, worker task, Bedrock KB service role, ECS execution)
+- 5 KMS customer-managed keys
+- 9 CloudWatch alarms + 1 dashboard + SNS alerts topic
+- SSM Parameter Store entries for the GitLab secrets
 
-Save the outputs — you'll reference them later:
+> The ECS services will fail their first deploy because ECR is empty. Step 5 fixes that.
+
+Save the outputs:
 
 ```bash
 terraform output
 ```
 
-Key outputs:
-- `alb_dns_name` — the URL where the app will be reachable
-- `ecr_repository_url` — where to push Docker images
-- `ecs_cluster_name` — for CLI operations
+You'll need:
 
-## Step 5: Build and Push Docker Images
+- `alb_dns_name` — public URL
+- `ecr_repository_url` — Docker push target
+- `ecs_cluster_name`, `nextjs_service_name`, `worker_service_name`, `nextjs_task_family`, `worker_task_family` — used by the rollout commands below
+- `vector_bucket_name`, `vector_bucket_arn`, `bedrock_kb_role_arn` — used by the Next.js task at runtime
+
+## Step 5: Build and roll out the first images
+
+> **CI normally owns this** ([`deployments/`](../deployments) has GitHub Actions and GitLab CI samples). Use the manual flow below only for the first deploy or local testing.
 
 From the project root:
 
 ```bash
-cd ..   # back to project root
+cd ..
 
-# Authenticate Docker with ECR
 ECR_URL=$(cd infra && terraform output -raw ecr_repository_url)
-AWS_REGION=ap-southeast-1
-aws ecr get-login-password --region $AWS_REGION \
-  | docker login --username AWS --password-stdin $ECR_URL
+CLUSTER=$(cd infra && terraform output -raw ecs_cluster_name)
+NEXTJS_SERVICE=$(cd infra && terraform output -raw nextjs_service_name)
+WORKER_SERVICE=$(cd infra && terraform output -raw worker_service_name)
+NEXTJS_FAMILY=$(cd infra && terraform output -raw nextjs_task_family)
+WORKER_FAMILY=$(cd infra && terraform output -raw worker_task_family)
 
-# Build and push the Next.js image
+aws ecr get-login-password --region ap-southeast-1 \
+  | docker login --username AWS --password-stdin "$ECR_URL"
+
 IMAGE_TAG=$(git rev-parse --short HEAD)
 
-docker build --target nextjs -t $ECR_URL:nextjs-$IMAGE_TAG .
-docker push $ECR_URL:nextjs-$IMAGE_TAG
-
-# Build and push the worker image
-docker build --target worker -t $ECR_URL:worker-$IMAGE_TAG .
-docker push $ECR_URL:worker-$IMAGE_TAG
+# Build for linux/amd64 even on Apple Silicon
+docker buildx build --platform linux/amd64 --target nextjs \
+  -t "$ECR_URL:nextjs-$IMAGE_TAG" --push .
+docker buildx build --platform linux/amd64 --target worker \
+  -t "$ECR_URL:worker-$IMAGE_TAG" --push .
 ```
 
-**Note on architecture:** If you're building on an Apple Silicon Mac (arm64) but deploying to x86 EC2 instances (t3.small), use buildx to build for the correct platform:
+Register a new task-def revision and roll the service:
 
 ```bash
-docker buildx build --platform linux/amd64 --target nextjs -t $ECR_URL:nextjs-$IMAGE_TAG --push .
-docker buildx build --platform linux/amd64 --target worker -t $ECR_URL:worker-$IMAGE_TAG --push .
+register_new_revision() {
+  local family="$1" image="$2"
+  aws ecs describe-task-definition --task-definition "$family" --query 'taskDefinition' \
+    | jq --arg IMG "$image" '
+        .containerDefinitions[0].image = $IMG
+        | {family, taskRoleArn, executionRoleArn, networkMode, containerDefinitions,
+           volumes, placementConstraints, requiresCompatibilities, cpu, memory, tags,
+           runtimePlatform}
+        | with_entries(select(.value != null and .value != []))' \
+    | aws ecs register-task-definition --cli-input-json file:///dev/stdin \
+        --query 'taskDefinition.taskDefinitionArn' --output text
+}
+
+NEXTJS_TD=$(register_new_revision "$NEXTJS_FAMILY" "$ECR_URL:nextjs-$IMAGE_TAG")
+WORKER_TD=$(register_new_revision "$WORKER_FAMILY" "$ECR_URL:worker-$IMAGE_TAG")
+
+aws ecs update-service --cluster "$CLUSTER" --service "$NEXTJS_SERVICE" --task-definition "$NEXTJS_TD"
+aws ecs update-service --cluster "$CLUSTER" --service "$WORKER_SERVICE" --task-definition "$WORKER_TD"
+
+aws ecs wait services-stable --cluster "$CLUSTER" --services "$NEXTJS_SERVICE"
 ```
 
-## Step 6: Update Terraform with New Image Tags
+Why this dance instead of `terraform apply -var=image_tag=...`? The ECS services have `lifecycle { ignore_changes = [task_definition, desired_count] }`. Terraform owns the infrastructure shape; CI owns image rollouts and autoscaling. Re-running `terraform apply` will not revert the image.
 
-Apply again, this time with the actual image tags:
-
-```bash
-cd infra
-
-terraform apply \
-  -var="nextjs_image_tag=nextjs-$IMAGE_TAG" \
-  -var="worker_image_tag=worker-$IMAGE_TAG"
-```
-
-ECS will register new task definition revisions and roll out the services.
-
-Wait a few minutes for the EC2 instance to register with the cluster and the task to pass health checks:
+## Step 6: Seed the users table
 
 ```bash
-aws ecs describe-services \
-  --cluster $(terraform output -raw ecs_cluster_name) \
-  --services $(terraform output -raw nextjs_service_name) \
-  --query 'services[0].{desired:desiredCount,running:runningCount,status:status}'
-```
-
-## Step 7: Create a Bedrock Knowledge Base (per repository)
-
-The app creates one Bedrock Knowledge Base per registered repository. For the first repository, you'll need to create one manually (the app will reference it by ID). Future iterations can automate this via the admin UI.
-
-For each repository you want to analyze:
-
-1. In the AWS Console, go to **Bedrock → Knowledge Bases → Create knowledge base**
-2. Name: `onboarding-<repo-id>`
-3. Data source: S3
-   - Bucket: use the `s3_bucket_name` from Terraform outputs
-   - Prefix: `knowledge/<repo-id>/`
-4. Embeddings model: `Amazon Titan Text Embeddings V2`
-5. Vector store: **S3 Vectors** (cheapest)
-6. Note the `knowledgeBaseId` and `dataSourceId` — store these in the DynamoDB repositories table
-
-## Step 8: Seed the Users Table
-
-The app uses a simple user picker with pre-seeded users. Run the seed script:
-
-```bash
-cd ..   # project root
-
-# Set env vars to point at real AWS
 export AWS_REGION=ap-southeast-1
 export DYNAMODB_TABLE_USERS=$(cd infra && terraform output -raw users_table_name)
-
 pnpm seed
 ```
 
-## Step 9: Test the Deployment
-
-Get the ALB URL:
+## Step 7: Smoke-test
 
 ```bash
-cd infra && terraform output -raw alb_dns_name
-```
+ALB=$(cd infra && terraform output -raw alb_dns_name)
 
-Visit it in a browser: `http://<alb-dns-name>`
-
-You should see the user picker. Select a user and start chatting once you've added a repository via the admin page and its analysis completes.
-
-Verify the health check:
-
-```bash
-curl http://<alb-dns-name>/api/healthcheckz
+# Liveness probe (ALB hits this every 30s)
+curl "http://$ALB/api/healthcheckz"
 # {"status":"ok"}
+
+# Deep readiness probe (DynamoDB + SQS reachability)
+curl "http://$ALB/api/readyz"
+# {"status":"ok","checks":{"dynamodb":"ok","sqs":"ok"}}
 ```
 
-## Step 10: Configure GitLab Webhook
+Visit `http://<alb>` — you should see the user picker.
 
-For each repository you want to sync:
+## Step 8: Add a repository
 
-1. In GitLab, go to **Settings → Webhooks**
-2. URL: `http://<alb-dns-name>/api/webhooks/gitlab`
-3. Secret token: the same `gitlab_webhook_secret` you set in terraform.tfvars
-4. Trigger: ✅ **Merge request events**
-5. Save
+The app provisions Bedrock KBs **automatically** when you register a repo. Each repo gets:
 
-## Future Deployments
+1. A vector index inside the shared S3 Vectors bucket
+2. A Bedrock Knowledge Base referencing that index
+3. A data source pointing at `s3://<knowledge-bucket>/knowledge/<repo-id>/`
 
-Once everything is set up, deploying a new version is:
+Use the admin UI (`/admin`) or `POST /api/repos`:
 
 ```bash
-# Build + push
-IMAGE_TAG=$(git rev-parse --short HEAD)
-docker buildx build --platform linux/amd64 --target nextjs -t $ECR_URL:nextjs-$IMAGE_TAG --push .
-docker buildx build --platform linux/amd64 --target worker -t $ECR_URL:worker-$IMAGE_TAG --push .
-
-# Deploy
-cd infra
-terraform apply \
-  -var="nextjs_image_tag=nextjs-$IMAGE_TAG" \
-  -var="worker_image_tag=worker-$IMAGE_TAG"
+curl -X POST "http://$ALB/api/repos" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"my-app","gitUrl":"https://gitlab.com/team/my-app.git","branch":"main"}'
 ```
 
-See [`ci-cd-deployment.md`](./ci-cd-deployment.md) for the recommended CI/CD pipeline setup and rollback procedures.
+The response includes `knowledgeBaseId`, `dataSourceId`, and `vectorIndexArn` — they're stored in DynamoDB. If KB provisioning fails the repo is created with `status=error` and the error message is returned.
+
+## Step 9: Configure the GitLab webhook
+
+Per repository:
+
+1. **GitLab → Settings → Webhooks**
+2. URL: `http://<alb>/api/webhooks/gitlab`
+3. Secret token: same `gitlab_webhook_secret` from `terraform.tfvars`
+4. Trigger: ✅ **Merge request events**
+
+A successful merge enqueues an analysis job, which the Fargate worker picks up (it scales from 0 → 1 in ~60s when a message lands), regenerates the knowledge documents, and triggers KB ingestion.
+
+## Future deployments
+
+For day-to-day deploys, **use the CI pipelines** in [`deployments/`](../deployments). They do the same register-task-def + update-service flow as Step 5 automatically on push to `main`.
+
+For manual one-off deploys, re-run only the build + register + update commands from Step 5 — no `terraform apply` needed unless infra changed.
+
+For infrastructure changes (CPU/memory, env vars, alarms, IAM):
+
+```bash
+cd infra && terraform plan && terraform apply
+```
+
+The next CI deploy will pick up new env vars / IAM changes via the new task-def revision it registers.
+
+## Observability
+
+- **Dashboard:** CloudWatch → Dashboards → `onboarding-<env>-overview` (request rate, 5xx, latency p95, queue depth, ECS CPU/memory, Bedrock invocations + throttles)
+- **Alarms** publish to the SNS topic `onboarding-<env>-alerts`. Subscribe via `alarm_email` tfvar or manually attach Slack/PagerDuty
+- **Logs:**
+  ```bash
+  aws logs tail /ecs/onboarding-dev/nextjs --follow
+  aws logs tail /ecs/onboarding-dev/worker --follow
+  ```
+
+## Cost estimate
+
+Rough monthly cost in `ap-southeast-1` for a low-volume internal deployment:
+
+| Item | ~USD/mo |
+| --- | --- |
+| ALB | 17 |
+| EC2 t3.small (Next.js, always-on) | 17 |
+| EC2 t4g.nano (fck-nat) | 3 |
+| EBS roots | 5 |
+| Fargate worker (scale-to-zero, ~10hr/mo) | 1 |
+| DynamoDB (pay-per-request) | 1 |
+| S3 (knowledge + access logs) | 1 |
+| **S3 Vectors** (storage + queries) | <5 |
+| SQS, ECR, SNS | <2 |
+| CloudWatch (logs + 9 alarms + dashboard) | 8–10 |
+| 5 KMS keys | 5 |
+| Data transfer egress | 5–20 |
+| **AWS infra subtotal** | **~$65–90** |
+| Bedrock Haiku 4.5 (chat) | depends on volume; ~$45 at 5k messages/mo |
+| Bedrock Sonnet 4.5 (analysis) | depends on merge frequency; ~$100 at 100 merges/mo |
+
+S3 Vectors replaces OpenSearch Serverless (which would add ~$350/mo floor) — the dominant cost win for this stack.
+
+Set a billing alarm in CloudWatch and an anomaly-detection alert on Bedrock spend.
 
 ## Troubleshooting
 
 ### ECS task fails to start
 
-Check the CloudWatch logs:
-
 ```bash
 aws logs tail /ecs/onboarding-dev/nextjs --follow
-aws logs tail /ecs/onboarding-dev/worker --follow
 ```
 
-Common issues:
-- **Image platform mismatch**: you built on arm64 Mac but deploy to x86 EC2. Use `docker buildx --platform linux/amd64`.
-- **Missing Bedrock model access**: the task role has permission but you didn't opt in via the console. Revisit Step 3.
-- **Secrets not found**: SSM parameter ARNs in task definition don't match. Re-run `terraform apply`.
+Common causes:
+
+- **Image platform mismatch** — built on arm64 Mac without `--platform linux/amd64`
+- **Bedrock model access not granted** — opt in via the console (Step 3); the IAM perms are present but the model itself is gated per account
+- **Region mismatch on Claude 4.5 model ID** — switch the prefix (`us.` → `apac.`) or change `bedrock_chat_model` / `bedrock_analysis_model` tfvars
+- **Missing env var** — `src/env.js` validates on boot; the failed validation shows up in the first log lines
 
 ### ALB returns 502/503
 
-The Next.js task hasn't passed health checks. Check:
+The Next.js task hasn't passed health checks:
 
 ```bash
-aws elbv2 describe-target-health \
-  --target-group-arn $(aws elbv2 describe-target-groups --names onboarding-dev-nextjs-tg --query 'TargetGroups[0].TargetGroupArn' --output text)
+TG_ARN=$(aws elbv2 describe-target-groups \
+  --names "$(terraform -chdir=infra output -raw nextjs_service_name | sed 's/-nextjs/-nextjs-tg/')" \
+  --query 'TargetGroups[0].TargetGroupArn' --output text)
+aws elbv2 describe-target-health --target-group-arn "$TG_ARN"
 ```
 
 ### Worker never picks up jobs
 
-- Verify the SQS alarm is firing when messages arrive: **CloudWatch → Alarms**
-- Check that desired count scales above 0 when messages appear
-- Check worker logs for errors
+- Confirm `onboarding-<env>-worker-scale-up` alarm is firing (CloudWatch → Alarms)
+- Check `desiredCount` scales above 0:
+  ```bash
+  aws ecs describe-services --cluster "$CLUSTER" --services "$WORKER_SERVICE" \
+    --query 'services[0].{desired:desiredCount,running:runningCount}'
+  ```
+- DLQ filling? `aws sqs get-queue-attributes --queue-url <dlq-url> --attribute-names ApproximateNumberOfMessagesVisible`
 
-### Cost monitoring
+### KB provisioning fails on `POST /api/repos`
 
-Set a billing alarm in CloudWatch to avoid surprises. Main cost drivers:
-- EC2 t3.small (~$15/mo) — Next.js always-on
-- Fargate worker (pay-per-use, ~$0 when idle)
-- fck-nat t4g.nano (~$3/mo)
-- KMS keys (5 × $1 = $5/mo)
-- Bedrock Claude calls (variable — monitor usage)
-- S3 + DynamoDB (pay-per-request, minimal at small scale)
+Most likely:
 
-Expected baseline: **~$25-30/mo** plus Bedrock usage.
+- Bedrock model access for Titan embeddings not granted in the deploy region
+- S3 Vectors not available in the region (check supported regions; `ap-southeast-1` is supported as of 2026)
+- Next.js task role missing `iam:PassRole` to the Bedrock KB role — re-run `terraform apply`
 
-## Tearing Down
-
-To destroy everything:
+## Tearing down
 
 ```bash
 cd infra
 terraform destroy
 ```
 
-You'll also need to manually:
-- Empty the S3 buckets (Terraform won't delete non-empty buckets)
-- Delete any Bedrock Knowledge Bases you created manually in Step 7
-- Schedule KMS keys for deletion (they have a 7-30 day waiting period)
+Manual cleanup needed for:
+
+- **S3 buckets** — Terraform won't delete non-empty buckets. Empty `knowledge` and `access-logs` first.
+- **S3 Vectors indexes** — created at runtime per repo. If you skipped `DELETE /api/repos/:id` for each repo, run:
+  ```bash
+  aws s3vectors list-indexes --vector-bucket-name <name> --query 'indexes[].indexName' --output text \
+    | xargs -n1 -I{} aws s3vectors delete-index --vector-bucket-name <name> --index-name {}
+  ```
+- **Bedrock Knowledge Bases** — same: app-created, listed via `aws bedrock list-knowledge-bases`.
+- **KMS keys** — scheduled for deletion by Terraform with a 7–30 day waiting period. Cancel via `aws kms cancel-key-deletion` if needed.
+- **ECR images** — `aws ecr batch-delete-image` per repo.
