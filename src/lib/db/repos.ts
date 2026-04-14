@@ -69,16 +69,18 @@ export async function updateRepoKnowledgeBase(
   repoId: string,
   knowledgeBaseId: string,
   dataSourceId: string,
+  vectorIndexArn: string,
 ): Promise<void> {
   await docClient.send(
     new UpdateCommand({
       TableName: TABLE_REPOSITORIES,
       Key: { PK: `REPO#${repoId}`, SK: "METADATA" },
       UpdateExpression:
-        "SET knowledgeBaseId = :kbId, dataSourceId = :dsId",
+        "SET knowledgeBaseId = :kbId, dataSourceId = :dsId, vectorIndexArn = :viArn",
       ExpressionAttributeValues: {
         ":kbId": knowledgeBaseId,
         ":dsId": dataSourceId,
+        ":viArn": vectorIndexArn,
       },
     }),
   );
@@ -103,6 +105,7 @@ function itemToRepo(item: Record<string, unknown>): Repository {
     lastAnalyzedAt: (item.lastAnalyzedAt as string) ?? null,
     knowledgeBaseId: (item.knowledgeBaseId as string) ?? null,
     dataSourceId: (item.dataSourceId as string) ?? null,
+    vectorIndexArn: (item.vectorIndexArn as string) ?? null,
     s3Prefix: item.s3Prefix as string,
   };
 }

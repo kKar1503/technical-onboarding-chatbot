@@ -20,6 +20,7 @@ export interface Repository {
   lastAnalyzedAt: string | null;
   knowledgeBaseId: string | null;
   dataSourceId: string | null;
+  vectorIndexArn: string | null;
   s3Prefix: string;
 }
 
