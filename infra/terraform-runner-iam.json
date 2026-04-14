@@ -216,6 +216,29 @@
       "Effect": "Allow",
       "Action": "sts:GetCallerIdentity",
       "Resource": "*"
+    },
+    {
+      "Sid": "S3Vectors",
+      "Effect": "Allow",
+      "Action": ["s3vectors:*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BedrockKB",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:CreateKnowledgeBase",
+        "bedrock:DeleteKnowledgeBase",
+        "bedrock:GetKnowledgeBase",
+        "bedrock:UpdateKnowledgeBase",
+        "bedrock:ListKnowledgeBases",
+        "bedrock:*DataSource",
+        "bedrock:ListDataSources",
+        "bedrock:TagResource",
+        "bedrock:UntagResource",
+        "bedrock:ListTagsForResource"
+      ],
+      "Resource": "*"
     }
   ]
 }
