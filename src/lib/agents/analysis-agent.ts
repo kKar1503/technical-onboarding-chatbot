@@ -25,6 +25,11 @@ export function createAnalysisAgent(repoPath: string, repoId: string) {
     model: analysisModel,
     instructions: ANALYSIS_INSTRUCTIONS,
     stopWhen: stepCountIs(100),
+    // Cache the system prompt + tool defs. Within one analysis run the
+    // tool loop reuses these every step, so cache reads dominate writes.
+    providerOptions: {
+      bedrock: { cachePoint: { type: "default" } },
+    },
     tools: {
       listRepoFiles: tool({
         description:

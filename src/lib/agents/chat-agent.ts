@@ -42,5 +42,11 @@ export function createChatAgent(
     tools: {
       retrieveKnowledge: createRetrieveKnowledgeTool(knowledgeBaseId),
     },
+    // Cache the system prompt across turns. Bedrock pays a 25% premium on
+    // the first request and 10% of normal input on cache reads (5-min TTL),
+    // so this is a net win for any multi-turn conversation.
+    providerOptions: {
+      bedrock: { cachePoint: { type: "default" } },
+    },
   });
 }
