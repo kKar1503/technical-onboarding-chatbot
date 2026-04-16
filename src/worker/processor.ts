@@ -1,10 +1,25 @@
 import { execSync } from "child_process";
-import { mkdtempSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { getRepo, updateRepoStatus } from "~/lib/db/repos";
 import { startIngestionJob } from "~/lib/aws/bedrock-kb";
+import {
+  deleteSourceFile,
+  uploadSourceFile,
+} from "~/lib/aws/s3";
 import { createAnalysisAgent } from "~/lib/agents/analysis-agent";
+import { SOURCE_INGEST, WORKER } from "~/lib/config";
+import {
+  FULL_ANALYSIS_PROMPT,
+  buildIncrementalAnalysisPrompt,
+} from "~/lib/prompts";
+import {
+  collectSourceFiles,
+  countAnalyzableFiles,
+  isEligibleSourceFile,
+} from "~/lib/source-ingest";
+import type { ChangedFile } from "~/lib/gitlab";
 import type { AnalysisJob } from "~/types";
 
 export async function processAnalysisJob(job: AnalysisJob): Promise<void> {
@@ -29,30 +44,25 @@ export async function processAnalysisJob(job: AnalysisJob): Promise<void> {
     console.log(`[processor] Cloning ${repo.name} (${repo.branch})...`);
     execSync(
       `git clone --depth 1 --branch ${repo.branch} ${cloneUrl} ${workDir}/repo`,
-      { stdio: "pipe", timeout: 120000 },
+      { stdio: "pipe", timeout: WORKER.gitCloneTimeoutMs },
     );
 
     const repoPath = join(workDir, "repo");
 
     if (job.type === "full") {
-      console.log(`[processor] Running full analysis for ${repo.name}...`);
-      const agent = createAnalysisAgent(repoPath, job.repoId);
-
-      await agent.generate({
-        prompt: `Analyze the repository at the current directory and create comprehensive knowledge documents.
-
-Start by listing the root directory structure, then read key configuration files (README, package.json, etc.) to understand the tech stack.
-Then systematically analyze each major module/directory and create knowledge documents for:
-1. overview.md — Repository overview, tech stack, purpose
-2. architecture.md — System architecture, service boundaries, data flow
-3. modules/<name>.md — One per major module/directory
-4. apis/<group>.md — API endpoints (if applicable)
-5. data-models/<name>.md — Database schemas (if applicable)
-6. setup-guide.md — How to set up and run locally
-7. conventions.md — Coding patterns and conventions
-
-Use the writeKnowledgeDoc tool for each document.`,
+      // Mirror all eligible source files to S3 first. The KB will ingest
+      // them alongside whatever docs the agent produces, so retrieval can
+      // hit real code for specific technical questions.
+      const sourceStats = await uploadAllSourceFiles(repoPath, job.repoId);
+      const totalFiles = countAnalyzableFiles(repoPath);
+      console.log(
+        `[processor] Running full analysis for ${repo.name} (${totalFiles} files in scope, ${sourceStats.uploaded} source files uploaded, ${sourceStats.skipped} skipped)...`,
+      );
+      const agent = createAnalysisAgent(repoPath, job.repoId, "full", {
+        totalFiles,
       });
+
+      await agent.generate({ prompt: FULL_ANALYSIS_PROMPT });
     } else {
       // Incremental analysis — scope strictly to the files the MR touched.
       console.log(
@@ -64,21 +74,17 @@ Use the writeKnowledgeDoc tool for each document.`,
           `[processor] No changed files supplied; skipping incremental run for MR ${job.mrIid}`,
         );
       } else {
-        const fileList = job.changedFiles.map((f) => `- ${f}`).join("\n");
-        const agent = createAnalysisAgent(repoPath, job.repoId);
+        // Reconcile source mirror: uploads for add/modify, deletes for delete.
+        await syncChangedSourceFiles(repoPath, job.repoId, job.changedFiles);
+
+        const agent = createAnalysisAgent(repoPath, job.repoId, "incremental", {
+          changedFiles: job.changedFiles.length,
+        });
         await agent.generate({
-          prompt: `An incremental update is needed for this repository's knowledge base after MR ${job.mrIid}.
-
-Files changed in this merge:
-${fileList}
-
-Constraints (read carefully):
-- Read ONLY the files listed above with the readFile tool. Do not browse the rest of the repository.
-- Identify which existing knowledge documents these changes affect (e.g. modules/auth.md if auth files changed).
-- Update ONLY those affected documents via writeKnowledgeDoc — do not regenerate unaffected ones.
-- If the changes are trivial (typos, formatting, comments) and don't alter behavior, exit without writing.
-
-Keep the run tight: each updated doc should preserve its existing structure with targeted edits, not a full rewrite.`,
+          prompt: buildIncrementalAnalysisPrompt(
+            job.mrIid ?? "unknown",
+            job.changedFiles,
+          ),
         });
       }
     }
@@ -106,6 +112,101 @@ Keep the run tight: each updated doc should preserve its existing structure with
       rmSync(workDir, { recursive: true, force: true });
     } catch {
       // Cleanup failure is non-fatal
+    }
+  }
+}
+
+interface UploadStats {
+  uploaded: number;
+  skipped: number;
+}
+
+/**
+ * Uploads every eligible source file to S3 with bounded concurrency. Called
+ * during full analyses so the KB has the whole repo's current code to RAG
+ * against.
+ */
+async function uploadAllSourceFiles(
+  repoPath: string,
+  repoId: string,
+): Promise<UploadStats> {
+  const files = collectSourceFiles(repoPath);
+  let uploaded = 0;
+  let skipped = 0;
+
+  const queue = [...files];
+  const workers = Array.from(
+    { length: Math.min(SOURCE_INGEST.uploadConcurrency, queue.length) },
+    async () => {
+      while (queue.length > 0) {
+        const file = queue.shift();
+        if (!file) break;
+        try {
+          await uploadSourceFile(repoId, file.relPath, file.absPath);
+          uploaded++;
+        } catch (err) {
+          skipped++;
+          console.warn(
+            `[processor] Failed to upload source ${file.relPath}:`,
+            err,
+          );
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
+
+  return { uploaded, skipped };
+}
+
+/**
+ * Applies the MR's file changes to the S3 source mirror. Added/modified
+ * files (that are still eligible) are re-uploaded; deleted files — and any
+ * file that became ineligible (e.g. grew past the size cap) — are removed.
+ */
+async function syncChangedSourceFiles(
+  repoPath: string,
+  repoId: string,
+  changed: ChangedFile[],
+): Promise<void> {
+  for (const change of changed) {
+    if (change.changeType === "deleted") {
+      try {
+        await deleteSourceFile(repoId, change.path);
+      } catch (err) {
+        console.warn(
+          `[processor] Failed to delete source ${change.path}:`,
+          err,
+        );
+      }
+      continue;
+    }
+
+    const absPath = join(repoPath, change.path);
+    if (!existsSync(absPath)) continue; // Shouldn't happen but be safe.
+
+    let size = 0;
+    try {
+      size = statSync(absPath).size;
+    } catch {
+      continue;
+    }
+
+    if (!isEligibleSourceFile(change.path, size, absPath)) {
+      // File exists but the filter rejects it — make sure we're not holding
+      // a stale version in S3 from before it became ineligible.
+      try {
+        await deleteSourceFile(repoId, change.path);
+      } catch {
+        // Best-effort cleanup.
+      }
+      continue;
+    }
+
+    try {
+      await uploadSourceFile(repoId, change.path, absPath);
+    } catch (err) {
+      console.warn(`[processor] Failed to upload source ${change.path}:`, err);
     }
   }
 }

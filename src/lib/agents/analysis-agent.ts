@@ -1,30 +1,33 @@
 import { ToolLoopAgent, tool, stepCountIs } from "ai";
 import { analysisModel } from "~/lib/aws/bedrock";
 import { uploadKnowledgeDoc } from "~/lib/aws/s3";
+import { AGENT_LIMITS, getAnalysisMaxSteps, type AnalysisMode } from "~/lib/config";
+import { IGNORED_DIRECTORIES } from "~/lib/source-ingest";
+import {
+  SYSTEM_ANALYSIS,
+  TOOL_LIST_REPO_FILES,
+  TOOL_LIST_REPO_FILES_DEPTH,
+  TOOL_LIST_REPO_FILES_DIRECTORY,
+  TOOL_READ_FILE,
+  TOOL_READ_FILE_PATH,
+  TOOL_WRITE_KNOWLEDGE_DOC,
+  TOOL_WRITE_KNOWLEDGE_DOC_CONTENT,
+  TOOL_WRITE_KNOWLEDGE_DOC_PATH,
+} from "~/lib/prompts";
 import { z } from "zod";
 import { readFileSync, readdirSync, statSync } from "fs";
 import { join, relative } from "path";
 
-const ANALYSIS_INSTRUCTIONS = `You are a senior software engineer tasked with creating comprehensive documentation for a code repository. Your goal is to produce knowledge documents that will help both engineers and non-technical team members understand the repository.
-
-For each document you write, include TWO sections:
-1. **Technical Summary** — Detailed technical information with file paths, function names, patterns, and implementation details.
-2. **Business Summary** — Plain language explanation of what this component does, why it exists, and what business value it provides.
-
-When analyzing a repository:
-1. First, list the repository structure to understand the overall layout
-2. Read key files (README, package.json, config files) to understand the tech stack
-3. Systematically analyze each major module/directory
-4. Document APIs, data models, workflows, and conventions
-5. Write each knowledge document using the writeKnowledgeDoc tool
-
-Be thorough but concise. Focus on information that would help someone new to the codebase become productive quickly.`;
-
-export function createAnalysisAgent(repoPath: string, repoId: string) {
+export function createAnalysisAgent(
+  repoPath: string,
+  repoId: string,
+  mode: AnalysisMode,
+  stepContext: { totalFiles?: number; changedFiles?: number } = {},
+) {
   return new ToolLoopAgent({
     model: analysisModel,
-    instructions: ANALYSIS_INSTRUCTIONS,
-    stopWhen: stepCountIs(100),
+    instructions: SYSTEM_ANALYSIS,
+    stopWhen: stepCountIs(getAnalysisMaxSteps(mode, stepContext)),
     // Cache the system prompt + tool defs. Within one analysis run the
     // tool loop reuses these every step, so cache reads dominate writes.
     providerOptions: {
@@ -32,45 +35,27 @@ export function createAnalysisAgent(repoPath: string, repoId: string) {
     },
     tools: {
       listRepoFiles: tool({
-        description:
-          "List files and directories in the repository. Returns a tree of file paths relative to the repo root. Excludes node_modules, .git, build artifacts, and other non-essential files.",
+        description: TOOL_LIST_REPO_FILES,
         inputSchema: z.object({
           directory: z
             .string()
             .default(".")
-            .describe(
-              "Directory to list relative to repo root. Use '.' for root.",
-            ),
+            .describe(TOOL_LIST_REPO_FILES_DIRECTORY),
           maxDepth: z
             .number()
-            .default(3)
-            .describe("Maximum depth of directory traversal"),
+            .default(AGENT_LIMITS.defaultListDepth)
+            .describe(TOOL_LIST_REPO_FILES_DEPTH),
         }),
         execute: async ({ directory, maxDepth }) => {
           const fullPath = join(repoPath, directory);
           const files: string[] = [];
-
-          const IGNORE = new Set([
-            "node_modules",
-            ".git",
-            "dist",
-            "build",
-            ".next",
-            "__pycache__",
-            ".cache",
-            "coverage",
-            ".idea",
-            ".vscode",
-            "vendor",
-            "target",
-          ]);
 
           function walk(dir: string, depth: number) {
             if (depth > maxDepth) return;
             try {
               const entries = readdirSync(dir);
               for (const entry of entries) {
-                if (IGNORE.has(entry) || entry.startsWith(".")) continue;
+                if (IGNORED_DIRECTORIES.has(entry) || entry.startsWith(".")) continue;
                 const entryPath = join(dir, entry);
                 const rel = relative(repoPath, entryPath);
                 try {
@@ -91,26 +76,22 @@ export function createAnalysisAgent(repoPath: string, repoId: string) {
           }
 
           walk(fullPath, 0);
-          return { files: files.slice(0, 500) };
+          return { files: files.slice(0, AGENT_LIMITS.maxFilesListed) };
         },
       }),
 
       readFile: tool({
-        description:
-          "Read the contents of a specific file from the repository. Use this to understand implementation details.",
+        description: TOOL_READ_FILE,
         inputSchema: z.object({
-          filePath: z
-            .string()
-            .describe("File path relative to the repository root"),
+          filePath: z.string().describe(TOOL_READ_FILE_PATH),
         }),
         execute: async ({ filePath }) => {
           try {
             const fullPath = join(repoPath, filePath);
             const content = readFileSync(fullPath, "utf-8");
-            // Truncate very large files
-            if (content.length > 50000) {
+            if (content.length > AGENT_LIMITS.maxFileChars) {
               return {
-                content: content.slice(0, 50000),
+                content: content.slice(0, AGENT_LIMITS.maxFileChars),
                 truncated: true,
                 totalLength: content.length,
               };
@@ -123,19 +104,10 @@ export function createAnalysisAgent(repoPath: string, repoId: string) {
       }),
 
       writeKnowledgeDoc: tool({
-        description:
-          "Write a knowledge document to S3. Use this after analyzing a module, API, data model, or other aspect of the repository. Each document should contain both a Technical Summary and a Business Summary section.",
+        description: TOOL_WRITE_KNOWLEDGE_DOC,
         inputSchema: z.object({
-          path: z
-            .string()
-            .describe(
-              "Document path within the knowledge base (e.g., 'overview.md', 'modules/auth.md', 'apis/users-api.md')",
-            ),
-          content: z
-            .string()
-            .describe(
-              "Full markdown content of the knowledge document, including Technical Summary and Business Summary sections",
-            ),
+          path: z.string().describe(TOOL_WRITE_KNOWLEDGE_DOC_PATH),
+          content: z.string().describe(TOOL_WRITE_KNOWLEDGE_DOC_CONTENT),
         }),
         execute: async ({ path, content }) => {
           await uploadKnowledgeDoc(repoId, path, content);
