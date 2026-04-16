@@ -123,14 +123,6 @@ For deeper verification post-deploy, hit `GET /api/readyz` — it probes DynamoD
 
 ## Observability
 
-CloudWatch alarms that page during/after a deploy:
+CloudWatch dashboard `onboarding-<env>-overview` gives a one-pane view of the request path and async pipeline (ALB request/5xx/latency, queue depth + DLQ + age, ECS CPU/memory, Bedrock invocations/throttles/errors).
 
-- `onboarding-<env>-nextjs-5xx` — target group 5xx > 5/min
-- `onboarding-<env>-nextjs-unhealthy-hosts` — any failing health checks
-- `onboarding-<env>-nextjs-cpu-high` — sustained CPU > 80%
-- `onboarding-<env>-analysis-dlq-not-empty` — failed analysis jobs
-- `onboarding-<env>-bedrock-throttles` — model-level quota pressure
-
-All publish to the SNS topic `onboarding-<env>-alerts` — subscribe via the `alarm_email` tfvar.
-
-Dashboard: `onboarding-<env>-overview` (request/5xx/latency, queue depth + DLQ + age, ECS CPU/memory, Bedrock).
+Raw logs are in `/ecs/onboarding-<env>/nextjs`, `/ecs/onboarding-<env>/worker`, and `/vpc/onboarding-<env>/flow-logs`.
