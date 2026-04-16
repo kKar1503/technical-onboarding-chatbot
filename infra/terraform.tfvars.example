@@ -3,10 +3,6 @@ environment           = "dev"
 gitlab_webhook_secret = "your-webhook-secret-here"
 gitlab_access_token   = "glpat-xxxxxxxxxxxxxxxxxxxx"
 
-# Recommended: subscribe an email to CloudWatch alarms (5xx, DLQ depth,
-# Bedrock throttles, queue backlog, etc.). Leave empty to skip.
-# alarm_email = "ops@example.com"
-
 # Optional overrides
 # aws_region           = "ap-southeast-1"
 # project_name         = "onboarding"

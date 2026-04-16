@@ -80,12 +80,6 @@ variable "worker_max_count" {
   description = "Maximum number of Fargate worker tasks"
 }
 
-variable "alarm_email" {
-  type        = string
-  default     = ""
-  description = "Email address to receive CloudWatch alarm notifications. Leave empty to skip SNS subscription."
-}
-
 variable "bedrock_chat_model" {
   type        = string
   default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
