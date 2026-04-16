@@ -4,6 +4,7 @@ import {
   DeleteMessageCommand,
 } from "@aws-sdk/client-sqs";
 import { processAnalysisJob } from "./processor";
+import { WORKER } from "~/lib/config";
 import type { AnalysisJob } from "~/types";
 
 const sqs = new SQSClient({
@@ -11,15 +12,14 @@ const sqs = new SQSClient({
 });
 
 const QUEUE_URL = process.env.SQS_ANALYSIS_QUEUE_URL!;
-const POLL_INTERVAL_MS = 5000;
 
 async function pollOnce(): Promise<boolean> {
   const response = await sqs.send(
     new ReceiveMessageCommand({
       QueueUrl: QUEUE_URL,
-      MaxNumberOfMessages: 1,
-      WaitTimeSeconds: 20,
-      VisibilityTimeout: 900, // 15 minutes
+      MaxNumberOfMessages: WORKER.sqsMaxMessages,
+      WaitTimeSeconds: WORKER.sqsWaitTimeSeconds,
+      VisibilityTimeout: WORKER.sqsVisibilityTimeoutSeconds,
     }),
   );
 
@@ -62,11 +62,11 @@ async function main() {
       const processed = await pollOnce();
       if (!processed) {
         // No messages, wait briefly before polling again
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        await new Promise((resolve) => setTimeout(resolve, WORKER.pollIntervalMs));
       }
     } catch (err) {
       console.error("[worker] Poll error:", err);
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      await new Promise((resolve) => setTimeout(resolve, WORKER.pollIntervalMs));
     }
   }
 }

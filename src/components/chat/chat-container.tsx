@@ -12,6 +12,7 @@ import { ConversationSidebar } from "./conversation-sidebar";
 import { Button } from "~/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "~/components/ui/sheet";
 import { Menu } from "lucide-react";
+import { UI } from "~/lib/config";
 import type { ChatMode, Conversation, Repository } from "~/types";
 
 export function ChatContainer() {
@@ -115,7 +116,7 @@ export function ChatContainer() {
         const res = await api.post<Conversation>("/conversations", {
           repoId: selectedRepoId,
           mode,
-          title: text.slice(0, 50),
+          title: text.slice(0, UI.conversationTitleMaxChars),
         });
         setConversations((prev) => [res.data, ...prev]);
         setActiveConversationId(res.data.id);

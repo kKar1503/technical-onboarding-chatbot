@@ -8,6 +8,7 @@ import { Badge } from "~/components/ui/badge";
 import { Bot, User, FileText } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { UI } from "~/lib/config";
 
 interface MessageBubbleProps {
   message: UIMessage;
@@ -80,7 +81,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                       </span>
                     </div>
                     <div className="space-y-1">
-                      {result.sources.slice(0, 3).map((source, i) => (
+                      {result.sources.slice(0, UI.maxInlineSources).map((source, i) => (
                         <Badge
                           key={i}
                           variant="secondary"
