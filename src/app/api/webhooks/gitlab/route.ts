@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { listRepos } from "~/lib/db/repos";
 import { sendAnalysisJob } from "~/lib/aws/sqs";
-import { fetchMergeRequestChangedFiles } from "~/lib/gitlab";
+import {
+  fetchMergeRequestChangedFiles,
+  type ChangedFile,
+} from "~/lib/gitlab";
 
 export async function POST(request: Request) {
   // Verify GitLab webhook secret
@@ -66,7 +69,7 @@ export async function POST(request: Request) {
   // Fetch changed files so the worker can run a tightly-scoped analysis
   // instead of re-scanning the whole repo. Failure is non-fatal: the worker
   // can still fall back to a broader scan.
-  let changedFiles: string[] | undefined;
+  let changedFiles: ChangedFile[] | undefined;
   if (body.project?.id != null && attrs.iid != null) {
     try {
       changedFiles = await fetchMergeRequestChangedFiles(

@@ -41,11 +41,13 @@ export interface ConversationMessage {
   createdAt: string;
 }
 
+import type { ChangedFile } from "~/lib/gitlab";
+
 export interface AnalysisJob {
   repoId: string;
   type: AnalysisJobType;
   mrIid?: string;
-  changedFiles?: string[];
+  changedFiles?: ChangedFile[];
 }
 
 export interface KnowledgeChunk {
