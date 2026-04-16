@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { listRepos } from "~/lib/db/repos";
 import { sendAnalysisJob } from "~/lib/aws/sqs";
+import { fetchMergeRequestChangedFiles } from "~/lib/gitlab";
 
 export async function POST(request: Request) {
   // Verify GitLab webhook secret
@@ -21,6 +22,7 @@ export async function POST(request: Request) {
       source?: { web_url?: string };
     };
     project?: {
+      id?: number;
       web_url?: string;
       git_http_url?: string;
       git_ssh_url?: string;
@@ -61,15 +63,30 @@ export async function POST(request: Request) {
     });
   }
 
-  // Send incremental analysis job to SQS
+  // Fetch changed files so the worker can run a tightly-scoped analysis
+  // instead of re-scanning the whole repo. Failure is non-fatal: the worker
+  // can still fall back to a broader scan.
+  let changedFiles: string[] | undefined;
+  if (body.project?.id != null && attrs.iid != null) {
+    try {
+      changedFiles = await fetchMergeRequestChangedFiles(
+        body.project.id,
+        attrs.iid,
+      );
+    } catch (err) {
+      console.warn("[webhook] could not fetch MR changed files", err);
+    }
+  }
+
   await sendAnalysisJob({
     repoId: matchingRepo.id,
     type: "incremental",
     mrIid: String(attrs.iid),
+    changedFiles,
   });
 
   return NextResponse.json(
-    { message: "Incremental analysis queued" },
+    { message: "Incremental analysis queued", changedFiles },
     { status: 202 },
   );
 }

@@ -54,20 +54,33 @@ Then systematically analyze each major module/directory and create knowledge doc
 Use the writeKnowledgeDoc tool for each document.`,
       });
     } else {
-      // Incremental analysis — only re-analyze affected areas
+      // Incremental analysis — scope strictly to the files the MR touched.
       console.log(
-        `[processor] Running incremental analysis for ${repo.name} (MR ${job.mrIid})...`,
+        `[processor] Running incremental analysis for ${repo.name} (MR ${job.mrIid}, ${job.changedFiles?.length ?? 0} files)...`,
       );
-      const changedDesc = job.changedFiles
-        ? `Changed files: ${job.changedFiles.join(", ")}`
-        : `Merge request IID: ${job.mrIid}`;
 
-      const agent = createAnalysisAgent(repoPath, job.repoId);
-      await agent.generate({
-        prompt: `An incremental update is needed for this repository's knowledge base. ${changedDesc}
+      if (!job.changedFiles || job.changedFiles.length === 0) {
+        console.log(
+          `[processor] No changed files supplied; skipping incremental run for MR ${job.mrIid}`,
+        );
+      } else {
+        const fileList = job.changedFiles.map((f) => `- ${f}`).join("\n");
+        const agent = createAnalysisAgent(repoPath, job.repoId);
+        await agent.generate({
+          prompt: `An incremental update is needed for this repository's knowledge base after MR ${job.mrIid}.
 
-Analyze the affected files and update only the relevant knowledge documents. Use the listRepoFiles and readFile tools to understand what changed, then use writeKnowledgeDoc to update the affected documents.`,
-      });
+Files changed in this merge:
+${fileList}
+
+Constraints (read carefully):
+- Read ONLY the files listed above with the readFile tool. Do not browse the rest of the repository.
+- Identify which existing knowledge documents these changes affect (e.g. modules/auth.md if auth files changed).
+- Update ONLY those affected documents via writeKnowledgeDoc — do not regenerate unaffected ones.
+- If the changes are trivial (typos, formatting, comments) and don't alter behavior, exit without writing.
+
+Keep the run tight: each updated doc should preserve its existing structure with targeted edits, not a full rewrite.`,
+        });
+      }
     }
 
     // Trigger Bedrock Knowledge Base re-ingestion
